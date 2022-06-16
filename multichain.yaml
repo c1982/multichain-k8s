@@ -1,0 +1,205 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: multichain-config
+  labels:
+    app: multichain
+data:
+  MC_CHAINNAME: mchain
+  MC_NETWORK_PORT: "8571"
+  MC_RPC_PORT: "8570"
+  MC_RPC_USER: multichainrpc
+  MC_RPC_PASSWORD: p@55W0rd # Don't forget to move to secret for Prod!
+  MC_MASTER_NODE: multichain-0.multichain.default.svc.cluster.local
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: multichain
+  labels:
+    app: multichain
+spec:
+  clusterIP: None # This for roundrobin. Use multichain.default.svc.cluster.local hostname in client
+  selector:
+    app: multichain
+  ports:
+    - protocol: TCP
+      port: 8571
+      targetPort: 8571
+      name: network
+    - protocol: TCP
+      port: 8570
+      targetPort: 8570
+      name: rpc
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: multichain
+spec:
+  selector:
+    matchLabels:
+      app: multichain
+  serviceName: multichain
+  replicas: 2
+  template:
+    metadata:
+      labels:
+        app: multichain
+        version: "2.2.1"
+    spec:
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        - name: multichain-init
+          image: c1982/multichain:v2.2.1
+          imagePullPolicy: Always
+          env:
+            - name: MC_CHAINNAME
+              valueFrom:
+                configMapKeyRef:
+                  name: multichain-config
+                  key: MC_CHAINNAME
+            - name: MC_NETWORK_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: multichain-config
+                  key: MC_NETWORK_PORT
+            - name: MC_RPC_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: multichain-config
+                  key: MC_RPC_PORT
+            - name: MC_RPC_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: multichain-config
+                  key: MC_RPC_USER
+            - name: MC_RPC_PASSWORD
+              valueFrom:
+                configMapKeyRef:
+                  name: multichain-config
+                  key: MC_RPC_PASSWORD
+          command:
+            - "/bin/sh"
+            - "-c"
+            - |
+              set -ex
+              if [[ `hostname` == "multichain-0" ]]; then
+                if [ ! -d /root/.multichain/$(MC_CHAINNAME) ]; then
+                  multichain-util create $(MC_CHAINNAME)
+
+                  sed -i "s/^default-network-port.*/default-network-port = $(MC_NETWORK_PORT)/" /root/.multichain/$(MC_CHAINNAME)/params.dat
+                  sed -i "s/^default-rpc-port.*/default-rpc-port = $(MC_RPC_PORT)/" /root/.multichain/$(MC_CHAINNAME)/params.dat
+                  sed -i "s/^chain-name.*/chain-name = $(MC_CHAINNAME)/" /root/.multichain/$(MC_CHAINNAME)/params.dat
+                  sed -i "s/^chain-description.*/chain-description = $(MC_CHAINNAME)/" /root/.multichain/$(MC_CHAINNAME)/params.dat
+                  sed -i "s/^anyone-can-send.*/anyone-can-send = true/" /root/.multichain/$(MC_CHAINNAME)/params.dat
+                  sed -i "s/^anyone-can-receive.*/anyone-can-receive = true/" /root/.multichain/$(MC_CHAINNAME)/params.dat
+                  sed -i "s/^anyone-can-activate.*/anyone-can-activate = true/" /root/.multichain/$(MC_CHAINNAME)/params.dat
+                  sed -i "s/^anyone-can-connect.*/anyone-can-connect = true/" /root/.multichain/$(MC_CHAINNAME)/params.dat
+
+                  cat << EOF > /root/.multichain/$(MC_CHAINNAME)/multichain.conf
+              rpcuser=$(MC_RPC_USER)
+              rpcpassword=$(MC_RPC_PASSWORD)
+              rpcport=$(MC_RPC_PORT)
+              rpcallowip=0.0.0.0/0
+              EOF
+                 
+                fi
+              else
+                mkdir -p /root/.multichain/$(MC_CHAINNAME)
+                cat << EOF > /root/.multichain/$(MC_CHAINNAME)/multichain.conf
+              rpcuser=$(MC_RPC_USER)
+              rpcpassword=$(MC_RPC_PASSWORD)
+              rpcport=$(MC_RPC_PORT)
+              rpcallowip=0.0.0.0/0
+              EOF
+                cp /root/.multichain/$(MC_CHAINNAME)/multichain.conf /root/.multichain
+              fi
+          volumeMounts:
+            - name: multichain-data
+              mountPath: /root/.multichain
+      containers:
+        - name: multichain
+          image: c1982/multichain:v2.2.1
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8571
+              name: network
+            - containerPort: 8570
+              name: rpc
+          env:
+            - name: MC_CHAINNAME
+              valueFrom:
+                configMapKeyRef:
+                  name: multichain-config
+                  key: MC_CHAINNAME
+            - name: MC_NETWORK_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: multichain-config
+                  key: MC_NETWORK_PORT
+            - name: MC_RPC_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: multichain-config
+                  key: MC_RPC_PORT
+            - name: MC_RPC_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: multichain-config
+                  key: MC_RPC_USER
+            - name: MC_RPC_PASSWORD
+              valueFrom:
+                configMapKeyRef:
+                  name: multichain-config
+                  key: MC_RPC_PASSWORD
+            - name: MC_MASTER_NODE
+              valueFrom:
+                configMapKeyRef:
+                  name: multichain-config
+                  key: MC_MASTER_NODE
+          command:
+            - "/bin/sh"
+            - "-c"
+            - |
+              if [[ `hostname` == "multichain-0" ]]; then
+                multichaind -txindex -printtoconsole -shrinkdebugfilesize $(MC_CHAINNAME)
+              else
+                multichaind -txindex -printtoconsole -shrinkdebugfilesize $(MC_CHAINNAME)@$(MC_MASTER_NODE):$(MC_NETWORK_PORT)
+              fi
+          volumeMounts:
+            - name: multichain-data
+              mountPath: /root/.multichain
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - "-c"
+                - |
+                  multichain-cli $MC_CHAINNAME ping
+            initialDelaySeconds: 45
+            timeoutSeconds: 10
+  volumeClaimTemplates:
+    - metadata:
+        name: multichain-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: multichain
+        resources:
+          requests:
+            storage: 120Gi
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: multichain
+  labels:
+    app: multichain
+provisioner: kubernetes.io/aws-ebs
+reclaimPolicy: Retain
+allowVolumeExpansion: true
+volumeBindingMode: Immediate
+parameters:
+  type: io1
+  iopsPerGB: "10"
+  fsType: ext4
