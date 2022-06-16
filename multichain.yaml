@@ -138,21 +138,6 @@ spec:
                 configMapKeyRef:
                   name: multichain-config
                   key: MC_NETWORK_PORT
-            - name: MC_RPC_PORT
-              valueFrom:
-                configMapKeyRef:
-                  name: multichain-config
-                  key: MC_RPC_PORT
-            - name: MC_RPC_USER
-              valueFrom:
-                configMapKeyRef:
-                  name: multichain-config
-                  key: MC_RPC_USER
-            - name: MC_RPC_PASSWORD
-              valueFrom:
-                configMapKeyRef:
-                  name: multichain-config
-                  key: MC_RPC_PASSWORD
             - name: MC_MASTER_NODE
               valueFrom:
                 configMapKeyRef:
